@@ -36,14 +36,27 @@ const struct DeviceInfo PROGMEM devinfo = {
     {0x01,0x00}             // Info Bytes
 };
 
-/**
- * Configure the used hardware
- */
+DEFREGISTER(ServoReg0,MASTERID_REGS, 0x2e, 0x2f)
+
+class ServoList0 : public RegList0<ServoReg0> {
+public:
+  ServoList0 (uint16_t addr) : RegList0<ServoReg0>(addr) {}
+  bool releaseAfterMove (bool value) const { return this->writeRegister(0x2f, value & 0xff); }
+  bool releaseAfterMove ()           const { return this->readRegister (0x2f, 0);            }
+  bool powerUpAction (uint8_t value) const { return this->writeRegister(0x2e, value & 0xff); }
+  bool powerUpAction ()              const { return this->readRegister (0x2e, 0);            }
+  void defaults () {
+    clear();
+    releaseAfterMove(false);
+    powerUpAction(0);
+  }
+};
+
 typedef AskSin<StatusLed<LED_PIN>,NoBattery,Radio<AvrSPI<10,11,12,13> ,2>> Hal;
+typedef DimmerChannel<Hal, PEERS_PER_CHANNEL,ServoList0> ServoChannelType;
+typedef DimmerDevice<Hal, ServoChannelType, 1, 1, ServoList0> ServoDevice;
 Hal hal;
 
-typedef DimmerChannel<Hal, PEERS_PER_CHANNEL,List0> ServoChannelType;
-typedef DimmerDevice<Hal, ServoChannelType,1,1,List0> ServoDevice;
 
 class NoPWM {
 public:
@@ -52,24 +65,60 @@ public:
 };
 
 template<class HalType,class DimmerType,class PWM>
-class ServoControl : public DimmerControl<HalType,DimmerType,PWM> {
+class ServoControl : public DimmerControl<HalType,DimmerType,PWM>, public Alarm {
+private:
+  uint8_t lastphys;
+  bool    first;
 public:
   typedef DimmerControl<HalType,DimmerType,PWM> BaseControl;
-  ServoControl (DimmerType& dim) : BaseControl(dim) {
-    DDRD |= _BV(PD3);
-    TCCR2A = _BV(COM2A1) | _BV(COM2B1) | _BV(WGM21) | _BV(WGM20);
-    TCCR2B = _BV(WGM21);
-    TCCR2B |= _BV(CS22) ; // Prescaler 64
-   // TCCR2B |= _BV(CS21) | _BV(CS22); // Prescaler 256
-  }
+  ServoControl (DimmerType& dim) : BaseControl(dim), Alarm(2), lastphys(0), first(true) { }
 
   virtual ~ServoControl () {}
+
+  void activateTCCR2B() {
+    TCCR2B = _BV(WGM21)  | _BV(CS22);  // Prescaler 64
+  }
+
+  void deactivateTCCR2B() {
+    TCCR2B = 0;
+  }
+
+  void initTimer() {
+    DDRD |= _BV(PD3);
+    TCCR2A = _BV(COM2A1) | _BV(COM2B1) | _BV(WGM21) | _BV(WGM20);
+    activateTCCR2B();
+    ServoList0 l0 = BaseControl::dimmer.getList0();
+    if (l0.powerUpAction() == 0)
+      TCCR2B = 0;
+  }
+
+  virtual void trigger (__attribute__ ((unused)) AlarmClock& clock) {
+    deactivateTCCR2B();
+  }
 
   virtual void updatePhysical () {
     // first calculate all physical values of the dimmer channels
     BaseControl::updatePhysical();
-    int pos = map(this->physical[0], 0, 200, 22, 80);
-    OCR2B = pos;
+    ServoList0 l0 = BaseControl::dimmer.getList0();
+    uint8_t phys = this->physical[0];
+    int pos = map(phys, 0, 200, 22, 80);
+    if ((lastphys != phys) || (first && l0.powerUpAction() > 0 && phys == 0)) {
+
+      if (TCCR2B == 0) activateTCCR2B();
+      OCR2B = pos;
+
+      //DPRINT("UPDATE WITH POS");DDEC(pos);DPRINT(" FROM PHYS ");DDECLN(phys);
+
+      if (l0.releaseAfterMove() == true) {
+        sysclock.cancel(*this);
+        Alarm::set(millis2ticks(1000));
+        sysclock.add(*this);
+      }
+
+      first = false;
+
+    }
+    lastphys = phys;
   }
 };
 
@@ -82,6 +131,7 @@ void setup () {
   if( control.init(hal,0) ) {
     sdev.channel(1).peer(cfgBtn.peer());
   }
+  control.initTimer();
   buttonISR(cfgBtn,CONFIG_BUTTON_PIN);
 
   sdev.initDone();
