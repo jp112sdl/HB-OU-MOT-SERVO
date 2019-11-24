@@ -1,5 +1,10 @@
 # HB-OU-MOT-SERVO
 HomeMatic Servo Motor Controller
+<br/><br/>Servo-Motor Steuerung mittels Arduino Pro Mini (8MHz / 3.3V) und AskSin++.
+
+:information_source: Der Anschluss der Servo-Datenleitung erfolgt an Pin 3.
+
+
 
 
 ![img](Images/Bedienung.png)
