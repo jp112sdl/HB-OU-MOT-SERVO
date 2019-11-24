@@ -23,6 +23,10 @@
 // number of available peers per channel
 #define PEERS_PER_CHANNEL 6
 
+// timer values for servo motor
+#define TIMER_0DEG   22
+#define TIMER_180DEG 80
+
 // all library classes are placed in the namespace 'as'
 using namespace as;
 
@@ -36,7 +40,7 @@ const struct DeviceInfo PROGMEM devinfo = {
     {0x01,0x00}             // Info Bytes
 };
 
-DEFREGISTER(ServoReg0,MASTERID_REGS, 0x2e, 0x2f)
+DEFREGISTER(ServoReg0,MASTERID_REGS, DREG_INTKEY, 0x2e, 0x2f)
 
 class ServoList0 : public RegList0<ServoReg0> {
 public:
@@ -48,6 +52,7 @@ public:
   void defaults () {
     clear();
     releaseAfterMove(false);
+    intKeyVisible(true);
     powerUpAction(0);
   }
 };
@@ -75,25 +80,26 @@ public:
 
   virtual ~ServoControl () {}
 
-  void activateTCCR2B() {
-    TCCR2B = _BV(WGM21)  | _BV(CS22);  // Prescaler 64
+  void activateTCCR2() {
+    TCCR2A = /*_BV(COM2A1) | */ _BV(COM2B1) | _BV(WGM21) | _BV(WGM20);
+    TCCR2B = _BV(WGM21) | _BV(CS22);  // Prescaler 64
   }
 
-  void deactivateTCCR2B() {
+  void deactivateTCCR2() {
     TCCR2B = 0;
   }
 
+  bool isActive() { return TCCR2B > 0; }
+
   void initTimer() {
     DDRD |= _BV(PD3);
-    TCCR2A = _BV(COM2A1) | _BV(COM2B1) | _BV(WGM21) | _BV(WGM20);
-    activateTCCR2B();
-    ServoList0 l0 = BaseControl::dimmer.getList0();
-    if (l0.powerUpAction() == 0)
-      TCCR2B = 0;
+    activateTCCR2();
+    if (BaseControl::dimmer.getList0().powerUpAction() == 0)
+      deactivateTCCR2();
   }
 
   virtual void trigger (__attribute__ ((unused)) AlarmClock& clock) {
-    deactivateTCCR2B();
+    deactivateTCCR2();
   }
 
   virtual void updatePhysical () {
@@ -101,17 +107,17 @@ public:
     BaseControl::updatePhysical();
     ServoList0 l0 = BaseControl::dimmer.getList0();
     uint8_t phys = this->physical[0];
-    int pos = map(phys, 0, 200, 22, 80);
+    int pos = map(phys, 0, 200, TIMER_0DEG, TIMER_180DEG);
     if ((lastphys != phys) || (first && l0.powerUpAction() > 0 && phys == 0)) {
 
-      if (TCCR2B == 0) activateTCCR2B();
+      if (!isActive()) activateTCCR2();
       OCR2B = pos;
 
       //DPRINT("UPDATE WITH POS");DDEC(pos);DPRINT(" FROM PHYS ");DDECLN(phys);
 
       if (l0.releaseAfterMove() == true) {
         sysclock.cancel(*this);
-        Alarm::set(millis2ticks(1000));
+        Alarm::set(millis2ticks(800));
         sysclock.add(*this);
       }
 
